@@ -217,6 +217,38 @@ describe('MemoryStore', () => {
       await newStore.restore(snap);
       expect(newStore.getDLQCount()).toBe(1);
     });
+
+    it('restore does not mutate the original snapshot objects', async () => {
+      const wf = makeWorkflow('wf-mutate');
+      await store.saveWorkflow(wf);
+      const snap = await store.snapshot();
+
+      // Record the original createdAt value from the snapshot
+      const originalCreatedAt = snap.workflows['wf-mutate'].createdAt;
+
+      const newStore = new MemoryStore();
+      await newStore.restore(snap);
+
+      // The snapshot's object should not have been mutated to a Date instance
+      // (it started as a Date, so we verify the reference is the same string/object)
+      expect(snap.workflows['wf-mutate'].createdAt).toBe(originalCreatedAt);
+
+      // The restored workflow should have a proper Date
+      const restored = await newStore.getWorkflow('wf-mutate');
+      expect(restored?.createdAt).toBeInstanceOf(Date);
+    });
+
+    it('can restore twice without interference', async () => {
+      await store.saveWorkflow(makeWorkflow('wf-r1'));
+      const snap = await store.snapshot();
+
+      const newStore = new MemoryStore();
+      await newStore.restore(snap);
+      await newStore.restore(snap); // second restore should not double-up
+
+      const { total } = await newStore.listWorkflows();
+      expect(total).toBe(1);
+    });
   });
 
   describe('Disk persistence', () => {

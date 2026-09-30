@@ -79,24 +79,24 @@ describe('PriorityQueue', () => {
       expect(dequeued).toEqual([1, 2, 5, 3, 4]);
     });
 
-    it('handles large number of items', () => {
-      const pq = new PriorityQueue<number>();
+    it('handles large number of items and dequeues in non-increasing priority order', () => {
+      const pq = new PriorityQueue<{ val: number; pri: number }>();
       const N = 1000;
-      // Insert in random order
+      const priorities: number[] = [];
       for (let i = 0; i < N; i++) {
-        pq.enqueue(i, Math.random() * 100);
+        const pri = Math.floor(Math.random() * 100);
+        priorities.push(pri);
+        pq.enqueue({ val: i, pri }, pri);
       }
       expect(pq.size).toBe(N);
 
-      let lastPriority = Infinity;
-      let prevPriority = Infinity;
+      let lastDequeuedPriority = Infinity;
       while (!pq.isEmpty()) {
-        pq.dequeue();
-        // We just verify no crash and size decrements
+        const item = pq.dequeue()!;
+        expect(item.pri).toBeLessThanOrEqual(lastDequeuedPriority);
+        lastDequeuedPriority = item.pri;
       }
       expect(pq.isEmpty()).toBe(true);
-      void lastPriority;
-      void prevPriority;
     });
   });
 
@@ -133,6 +133,79 @@ describe('PriorityQueue', () => {
       expect(pq.dequeue()).toBe(4); // next highest
       expect(pq.dequeue()).toBe(1);
       expect(pq.dequeue()).toBe(2);
+    });
+  });
+
+  describe('removeAll', () => {
+    it('removes all matching items', () => {
+      const pq = new PriorityQueue<{ group: string; id: number }>();
+      pq.enqueue({ group: 'a', id: 1 }, 10);
+      pq.enqueue({ group: 'b', id: 2 }, 8);
+      pq.enqueue({ group: 'a', id: 3 }, 6);
+      pq.enqueue({ group: 'b', id: 4 }, 4);
+      pq.enqueue({ group: 'a', id: 5 }, 2);
+
+      const removed = pq.removeAll((item) => item.group === 'a');
+      expect(removed).toBe(3);
+      expect(pq.size).toBe(2);
+
+      // Only group 'b' items should remain, still in priority order
+      expect(pq.dequeue()!.id).toBe(2); // priority 8
+      expect(pq.dequeue()!.id).toBe(4); // priority 4
+      expect(pq.isEmpty()).toBe(true);
+    });
+
+    it('returns 0 when no items match', () => {
+      const pq = new PriorityQueue<string>();
+      pq.enqueue('a', 5);
+      pq.enqueue('b', 3);
+      expect(pq.removeAll((item) => item === 'z')).toBe(0);
+      expect(pq.size).toBe(2);
+    });
+
+    it('can remove all items', () => {
+      const pq = new PriorityQueue<number>();
+      pq.enqueue(1, 5);
+      pq.enqueue(2, 3);
+      pq.enqueue(3, 7);
+      expect(pq.removeAll(() => true)).toBe(3);
+      expect(pq.isEmpty()).toBe(true);
+    });
+
+    it('maintains heap property for remaining items after bulk remove', () => {
+      const pq = new PriorityQueue<number>();
+      // Add 10 items, mark odd ones for removal
+      for (let i = 1; i <= 10; i++) pq.enqueue(i, i);
+      pq.removeAll((item) => item % 2 !== 0); // remove 1,3,5,7,9
+      expect(pq.size).toBe(5);
+
+      // Remaining should be 10,8,6,4,2 in dequeue order
+      const dequeued: number[] = [];
+      while (!pq.isEmpty()) dequeued.push(pq.dequeue()!);
+      expect(dequeued).toEqual([10, 8, 6, 4, 2]);
+    });
+  });
+
+  describe('peekPriority', () => {
+    it('returns undefined on empty queue', () => {
+      expect(new PriorityQueue<string>().peekPriority()).toBeUndefined();
+    });
+
+    it('returns the priority of the highest-priority item', () => {
+      const pq = new PriorityQueue<string>();
+      pq.enqueue('low', 1);
+      pq.enqueue('high', 20);
+      pq.enqueue('medium', 10);
+      expect(pq.peekPriority()).toBe(20);
+    });
+
+    it('updates after dequeue', () => {
+      const pq = new PriorityQueue<string>();
+      pq.enqueue('a', 10);
+      pq.enqueue('b', 5);
+      expect(pq.peekPriority()).toBe(10);
+      pq.dequeue();
+      expect(pq.peekPriority()).toBe(5);
     });
   });
 

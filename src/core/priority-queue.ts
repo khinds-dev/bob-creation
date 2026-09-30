@@ -46,7 +46,8 @@ export class PriorityQueue<T> {
     return this.heap[0]?.priority;
   }
 
-  // Remove a specific item by predicate, returns true if found and removed
+  // Remove a specific item by predicate, returns true if found and removed.
+  // Only removes the first matching item.
   remove(predicate: (item: T) => boolean): boolean {
     const idx = this.heap.findIndex((node) => predicate(node.item));
     if (idx === -1) return false;
@@ -58,6 +59,29 @@ export class PriorityQueue<T> {
       this.sinkDown(idx);
     }
     return true;
+  }
+
+  // Remove ALL items matching predicate, returns number removed.
+  removeAll(predicate: (item: T) => boolean): number {
+    let removed = 0;
+    // Collect indices of all matching items (scan heap array directly)
+    // We must rebuild after bulk removal to maintain heap invariant.
+    const kept: PQItem<T>[] = [];
+    for (const node of this.heap) {
+      if (predicate(node.item)) {
+        removed++;
+      } else {
+        kept.push(node);
+      }
+    }
+    if (removed === 0) return 0;
+    // Rebuild heap from kept items
+    this.heap = kept;
+    // Heapify bottom-up
+    for (let i = Math.floor(this.heap.length / 2) - 1; i >= 0; i--) {
+      this.sinkDown(i);
+    }
+    return removed;
   }
 
   toArray(): T[] {

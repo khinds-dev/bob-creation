@@ -180,6 +180,8 @@ export class Scheduler extends EventEmitter {
       };
     }
 
+    const priority = opts.priority ?? JobPriority.NORMAL;
+
     const workflow: WorkflowExecution = {
       id: executionId,
       dagId,
@@ -188,7 +190,8 @@ export class Scheduler extends EventEmitter {
       steps: stepExecutions,
       input,
       createdAt: new Date(),
-      metadata: opts.metadata,
+      // Store priority in metadata so downstream steps (advanceWorkflow) can inherit it
+      metadata: { ...(opts.metadata ?? {}), priority },
     };
 
     await this.storage.saveWorkflow(workflow);
@@ -206,8 +209,6 @@ export class Scheduler extends EventEmitter {
     const failedSteps = new Set<string>();
     const runningSteps = new Set<string>();
     const readyStepIds = getReadySteps(parsedDAG, completedSteps, failedSteps, runningSteps);
-
-    const priority = opts.priority ?? JobPriority.NORMAL;
 
     for (const stepId of readyStepIds) {
       const step = dag.steps.find((s) => s.id === stepId)!;
@@ -246,8 +247,8 @@ export class Scheduler extends EventEmitter {
       }
     }
 
-    // Remove pending jobs from queue
-    this.jobQueue.remove((j) => j.workflowExecutionId === workflowId);
+    // Remove ALL pending jobs for this workflow from the queue
+    this.jobQueue.removeAll((j) => j.workflowExecutionId === workflowId);
 
     await this.storage.saveWorkflow(workflow);
     this.activeWorkflows.delete(workflowId);
@@ -328,7 +329,8 @@ export class Scheduler extends EventEmitter {
       activeWorkers: this.workerPool.activeCount,
       idleWorkers: this.workerPool.availableCount,
       queueDepth: this.jobQueue.size,
-      dlqDepth: 0, // fetched live
+      // dlqDepth is tracked via the metrics counter (incremented each time a job goes to DLQ)
+      dlqDepth: this.metrics.totalJobsDLQ,
       averageJobDurationMs: avg,
       uptimeMs: Date.now() - this.startedAt.getTime(),
     };

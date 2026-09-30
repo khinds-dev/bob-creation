@@ -62,9 +62,9 @@ describe('StateMachine', () => {
     });
 
     it('error message includes states', () => {
+      expect.assertions(3);
       try {
         assertValidTransition(JobState.FAILED, JobState.PENDING);
-        fail('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(StateTransitionError);
         expect((err as Error).message).toContain('FAILED');

@@ -250,6 +250,37 @@ describe('REST API Integration', () => {
       const res = await request(app).get('/api/jobs/nonexistent');
       expect(res.status).toBe(404);
     });
+
+    it('GET /api/jobs/:jobId - retrieves a real job', async () => {
+      await request(app).post('/api/dags').send(simpleDag);
+      await request(app).post('/api/workflows').send({ dagId: 'api-test-dag' });
+      await wait(200);
+      const listRes = await request(app).get('/api/jobs');
+      const jobs = listRes.body.data;
+      if (jobs.length > 0) {
+        const res = await request(app).get(`/api/jobs/${jobs[0].id}`);
+        expect(res.status).toBe(200);
+        expect(res.body.id).toBe(jobs[0].id);
+      }
+    });
+
+    it('DELETE /api/jobs/:jobId - returns 404 for missing job', async () => {
+      const res = await request(app).delete('/api/jobs/nonexistent-job');
+      expect(res.status).toBe(404);
+    });
+
+    it('GET /api/jobs supports pagination', async () => {
+      await request(app).post('/api/dags').send(simpleDag);
+      const res = await request(app).get('/api/jobs?page=1&pageSize=5');
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('page', 1);
+      expect(res.body).toHaveProperty('pageSize', 5);
+    });
+
+    it('GET /api/jobs returns 400 for invalid query', async () => {
+      const res = await request(app).get('/api/jobs?state=BOGUSSTATE');
+      expect(res.status).toBe(400);
+    });
   });
 
   // ── DLQ endpoint ────────────────────────────────────────────
@@ -259,6 +290,14 @@ describe('REST API Integration', () => {
       const res = await request(app).get('/api/dlq');
       expect(res.status).toBe(200);
       expect(res.body.data).toBeInstanceOf(Array);
+    });
+
+    it('DLQ endpoint has pagination fields', async () => {
+      const res = await request(app).get('/api/dlq');
+      expect(res.body).toHaveProperty('page');
+      expect(res.body).toHaveProperty('pageSize');
+      expect(res.body).toHaveProperty('total');
+      expect(res.body).toHaveProperty('hasMore');
     });
   });
 
@@ -272,6 +311,35 @@ describe('REST API Integration', () => {
       expect(res.body).toHaveProperty('activeWorkers');
       expect(res.body).toHaveProperty('queueDepth');
     });
+
+    it('metrics include dlqDepth field', async () => {
+      const res = await request(app).get('/api/metrics');
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('dlqDepth');
+      expect(typeof res.body.dlqDepth).toBe('number');
+    });
+
+    it('metrics dlqDepth increases after workflow failure', async () => {
+      // Register a dag that always fails with no retries
+      await request(app).post('/api/dags').send({
+        id: 'dlq-api-dag',
+        name: 'DLQ API DAG',
+        steps: [{
+          id: 'fs',
+          name: 'FS',
+          handler: 'fail',
+          retryPolicy: { maxRetries: 0 },
+        }],
+      });
+      const submitRes = await request(app)
+        .post('/api/workflows')
+        .send({ dagId: 'dlq-api-dag' });
+      const workflowId = submitRes.body.id;
+      await waitForState(app, workflowId, JobState.FAILED, 6000);
+
+      const metricsRes = await request(app).get('/api/metrics');
+      expect(metricsRes.body.dlqDepth).toBeGreaterThanOrEqual(1);
+    });
   });
 
   // ── Events endpoint ─────────────────────────────────────────
@@ -281,6 +349,42 @@ describe('REST API Integration', () => {
       const res = await request(app).get('/api/events');
       expect(res.status).toBe(200);
       expect(res.body.data).toBeInstanceOf(Array);
+    });
+
+    it('GET /api/events with workflowId filter returns only that workflow events', async () => {
+      // Register the DAG first (this describe block has no beforeEach for it)
+      await request(app).post('/api/dags').send(simpleDag);
+      const submitRes = await request(app)
+        .post('/api/workflows')
+        .send({ dagId: 'api-test-dag' });
+      const workflowId = submitRes.body.id;
+      await waitForState(app, workflowId, JobState.COMPLETED, 5000);
+
+      const res = await request(app).get(`/api/events?workflowId=${workflowId}`);
+      expect(res.status).toBe(200);
+      const events = res.body.data;
+      expect(events.length).toBeGreaterThan(0);
+      for (const ev of events) {
+        expect(ev.workflowExecutionId).toBe(workflowId);
+      }
+    });
+  });
+
+  // ── Workflows pagination ────────────────────────────────────
+
+  describe('Workflow list pagination', () => {
+    it('returns pagination fields', async () => {
+      const res = await request(app).get('/api/workflows?page=1&pageSize=5');
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('page', 1);
+      expect(res.body).toHaveProperty('pageSize', 5);
+      expect(res.body).toHaveProperty('total');
+      expect(res.body).toHaveProperty('hasMore');
+    });
+
+    it('GET /api/workflows returns 400 for invalid state filter', async () => {
+      const res = await request(app).get('/api/workflows?state=NOTASTATE');
+      expect(res.status).toBe(400);
     });
   });
 

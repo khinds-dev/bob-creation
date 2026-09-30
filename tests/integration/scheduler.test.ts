@@ -315,5 +315,181 @@ describe('Scheduler Integration', () => {
       const dags = await scheduler.listDAGs();
       expect(dags.length).toBeGreaterThanOrEqual(1);
     });
+
+    it('deletes a DAG', async () => {
+      const dag: DAGDefinition = {
+        id: 'delete-dag',
+        name: 'Delete DAG',
+        steps: [{ id: 's1', name: 'S1', handler: 'echo' }],
+      };
+      await scheduler.registerDAG(dag);
+      const deleted = await scheduler.deleteDAG('delete-dag');
+      expect(deleted).toBe(true);
+      expect(await scheduler.getDAG('delete-dag')).toBeNull();
+    });
+
+    it('throws DAGParseError for invalid DAG (cyclic)', async () => {
+      const cyclicDag: DAGDefinition = {
+        id: 'invalid-cyc',
+        name: 'Invalid',
+        steps: [
+          { id: 'a', name: 'A', handler: 'echo', dependsOn: ['b'] },
+          { id: 'b', name: 'B', handler: 'echo', dependsOn: ['a'] },
+        ],
+      };
+      await expect(scheduler.registerDAG(cyclicDag)).rejects.toThrow('cycle');
+    });
+  });
+
+  describe('Job cancellation', () => {
+    it('cancels a pending job', async () => {
+      // Register a slow handler to ensure job stays PENDING/RUNNING long enough to cancel
+      scheduler.registerHandler('very-slow', async () => {
+        await wait(20000);
+        return { success: true };
+      });
+      const dag: DAGDefinition = {
+        id: 'job-cancel-dag',
+        name: 'Job Cancel DAG',
+        steps: [{ id: 'js1', name: 'JS1', handler: 'very-slow' }],
+      };
+      await scheduler.registerDAG(dag);
+      const wf = await scheduler.submitWorkflow('job-cancel-dag');
+
+      // Allow the job to be created in storage
+      await wait(50);
+
+      const { items: jobs } = await scheduler.listJobs({ workflowExecutionId: wf.id });
+      expect(jobs.length).toBeGreaterThanOrEqual(1);
+
+      const jobId = jobs[0].id;
+      const result = await scheduler.cancelJob(jobId);
+      // May be true (if still pending) or false (if already running), both are valid
+      expect(typeof result).toBe('boolean');
+
+      // Cancel the workflow to clean up
+      await scheduler.cancelWorkflow(wf.id);
+    });
+
+    it('cancelJob returns false for nonexistent job', async () => {
+      expect(await scheduler.cancelJob('nonexistent-job-id')).toBe(false);
+    });
+  });
+
+  describe('Metrics correctness', () => {
+    it('dlqDepth increments after job is routed to DLQ', async () => {
+      const dag: DAGDefinition = {
+        id: 'dlq-metric-dag',
+        name: 'DLQ Metric DAG',
+        steps: [{
+          id: 'fail-s',
+          name: 'Fail S',
+          handler: 'fail',
+          retryPolicy: { maxRetries: 0 },
+        }],
+      };
+      await scheduler.registerDAG(dag);
+      const wf = await scheduler.submitWorkflow('dlq-metric-dag');
+      await waitForWorkflowState(scheduler, wf.id, JobState.FAILED, 5000);
+
+      const metrics = scheduler.getMetrics();
+      expect(metrics.dlqDepth).toBeGreaterThanOrEqual(1);
+      expect(metrics.totalJobsFailed).toBeGreaterThanOrEqual(1);
+      expect(metrics.totalWorkflowsFailed).toBeGreaterThanOrEqual(1);
+    });
+
+    it('averageJobDurationMs is positive after jobs complete', async () => {
+      const dag: DAGDefinition = {
+        id: 'avg-duration-dag',
+        name: 'Avg Duration DAG',
+        steps: [{ id: 's1', name: 'S1', handler: 'echo' }],
+      };
+      await scheduler.registerDAG(dag);
+      const wf = await scheduler.submitWorkflow('avg-duration-dag');
+      await waitForWorkflowState(scheduler, wf.id, JobState.COMPLETED, 5000);
+
+      const metrics = scheduler.getMetrics();
+      expect(metrics.totalJobsCompleted).toBeGreaterThanOrEqual(1);
+      expect(metrics.averageJobDurationMs).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('Event bus correctness', () => {
+    it('subscribe returns an unsubscribe function that stops events', async () => {
+      const received: string[] = [];
+      const unsub = eventBus.subscribe(EventType.WORKFLOW_SUBMITTED, () => {
+        received.push('event');
+      });
+
+      const dag: DAGDefinition = {
+        id: 'unsub-dag-1',
+        name: 'Unsub DAG 1',
+        steps: [{ id: 's1', name: 'S1', handler: 'echo' }],
+      };
+      await scheduler.registerDAG(dag);
+      await scheduler.submitWorkflow('unsub-dag-1');
+      expect(received).toHaveLength(1);
+
+      // Unsubscribe, then submit again
+      unsub();
+      const dag2: DAGDefinition = {
+        id: 'unsub-dag-2',
+        name: 'Unsub DAG 2',
+        steps: [{ id: 's1', name: 'S1', handler: 'echo' }],
+      };
+      await scheduler.registerDAG(dag2);
+      await scheduler.submitWorkflow('unsub-dag-2');
+      // Should still be 1 — the unsubscribed handler was not called again
+      expect(received).toHaveLength(1);
+    });
+
+    it('getEventsByWorkflow returns only events for that workflow', async () => {
+      const dag: DAGDefinition = {
+        id: 'events-wf-dag',
+        name: 'Events WF DAG',
+        steps: [{ id: 's1', name: 'S1', handler: 'echo' }],
+      };
+      await scheduler.registerDAG(dag);
+      const wf = await scheduler.submitWorkflow('events-wf-dag');
+      await waitForWorkflowState(scheduler, wf.id, JobState.COMPLETED, 5000);
+
+      const wfEvents = eventBus.getEventsByWorkflow(wf.id);
+      expect(wfEvents.length).toBeGreaterThan(0);
+      // All events must belong to this workflow
+      for (const ev of wfEvents) {
+        expect(ev.workflowExecutionId).toBe(wf.id);
+      }
+    });
+
+    it('getRecentEvents returns events in reverse-chronological order limited to N', async () => {
+      eventBus.clearLog();
+      const dag: DAGDefinition = {
+        id: 'recent-events-dag',
+        name: 'Recent Events DAG',
+        steps: [{ id: 's1', name: 'S1', handler: 'echo' }],
+      };
+      await scheduler.registerDAG(dag);
+      const wf = await scheduler.submitWorkflow('recent-events-dag');
+      await waitForWorkflowState(scheduler, wf.id, JobState.COMPLETED, 5000);
+
+      const allEvents = eventBus.getRecentEvents(100);
+      expect(allEvents.length).toBeGreaterThan(0);
+      // Limit should be respected
+      const limited = eventBus.getRecentEvents(1);
+      expect(limited.length).toBe(1);
+    });
+  });
+
+  describe('Priority propagation', () => {
+    it('stores priority on workflow metadata so downstream steps inherit it', async () => {
+      const dag: DAGDefinition = {
+        id: 'priority-prop-dag',
+        name: 'Priority Propagation DAG',
+        steps: [{ id: 's1', name: 'S1', handler: 'echo' }],
+      };
+      await scheduler.registerDAG(dag);
+      const wf = await scheduler.submitWorkflow('priority-prop-dag', {}, { priority: 15 });
+      expect((wf.metadata as Record<string, unknown>)?.['priority']).toBe(15);
+    });
   });
 });

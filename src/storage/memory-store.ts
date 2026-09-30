@@ -158,23 +158,27 @@ export class MemoryStore implements IStorage {
     this.dlq.length = 0;
 
     for (const [k, v] of Object.entries(snapshot.workflows)) {
-      // Rehydrate dates
-      v.createdAt = new Date(v.createdAt);
-      if (v.startedAt) v.startedAt = new Date(v.startedAt);
-      if (v.completedAt) v.completedAt = new Date(v.completedAt);
-      this.workflows.set(k, v);
+      // Clone to avoid mutating the snapshot object's date fields
+      const wf: WorkflowExecution = { ...v };
+      wf.createdAt = new Date(v.createdAt);
+      if (v.startedAt) wf.startedAt = new Date(v.startedAt);
+      if (v.completedAt) wf.completedAt = new Date(v.completedAt);
+      this.workflows.set(k, wf);
     }
 
     for (const [k, v] of Object.entries(snapshot.jobs)) {
-      v.createdAt = new Date(v.createdAt);
-      if (v.scheduledAt) v.scheduledAt = new Date(v.scheduledAt);
-      if (v.startedAt) v.startedAt = new Date(v.startedAt);
-      if (v.completedAt) v.completedAt = new Date(v.completedAt);
-      this.jobs.set(k, v);
+      // Clone to avoid mutating the snapshot object's date fields
+      const job: Job = { ...v };
+      job.createdAt = new Date(v.createdAt);
+      if (v.scheduledAt) job.scheduledAt = new Date(v.scheduledAt);
+      if (v.startedAt) job.startedAt = new Date(v.startedAt);
+      if (v.completedAt) job.completedAt = new Date(v.completedAt);
+      this.jobs.set(k, job);
     }
 
-    for (const job of snapshot.dlq) {
-      job.createdAt = new Date(job.createdAt);
+    for (const srcJob of snapshot.dlq) {
+      // Clone DLQ jobs as well
+      const job: Job = { ...srcJob, createdAt: new Date(srcJob.createdAt) };
       this.dlq.push(job);
     }
 

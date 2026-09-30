@@ -4,7 +4,7 @@
 // ============================================================
 
 import { parseDAG, topologicalSort, getReadySteps, DAGParseError } from '../../src/core/dag-parser';
-import { DAGDefinition, JobState } from '../../src/types';
+import { DAGDefinition } from '../../src/types';
 
 function makeDAG(overrides: Partial<DAGDefinition> = {}): DAGDefinition {
   return {
